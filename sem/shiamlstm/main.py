@@ -1,0 +1,231 @@
+import re
+import os
+import random
+import torch
+import torch.nn as nn
+from torch.autograd import Variable
+from torch import optim
+import torch.nn.functional as F
+import pickle
+import numpy as np
+import math
+import logging
+from collections import Counter
+logger = logging.getLogger('main')
+from model import siam
+
+import argparse
+
+parser = argparse.ArgumentParser()
+
+parser.add_argument("--hidden_size", default=256, help='rnn hidden size'
+  )
+parser.add_argument('--embed', default = 256, help='embedding size'
+  )
+parser.add_argument('--input',default='../stsbenchmark/sts-train.csv',help='path of training data'
+  )
+parser.add_argument('--dev',default='../stsbenchmark/sts-dev.csv',help='path of dev data'
+  )
+parser.add_argument('--epoch',default=10,help='number of epoch'
+  )
+args = parser.parse_args()
+
+
+
+net=None
+
+cudanum = 0
+batch_size=1
+hidden_size=args.hidden_size
+dt = []
+dev = []
+vocab=0
+vocab_size=0
+vocab_name = 'train'
+
+def save_pickle(obj, filename):
+  if os.path.isfile(filename):
+      logger.info("Overwriting %s." % filename)
+  else:
+      logger.info("Saving to %s." % filename)
+  with open(filename, 'wb') as f:
+      pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def make_dictionary(dt):
+  vocab_counter = Counter()
+  line_count =0
+  from nltk.tokenize import word_tokenize
+
+  for items in dt:
+    sent1 = items['sent1']
+    sent2 = items['sent2']
+
+    for i in sent1:
+      vocab_counter[i] +=1
+    for i in sent2:
+      vocab_counter[i]+=1
+    line_count +=1 
+  logger.info("Total: %d unique words with a total "
+              "of %d words."
+              % (len(vocab_counter), sum(vocab_counter.values())))
+
+  if len(vocab_counter.most_common())>49998:
+    vocab_cnt = vocab_counter.most_common(49998)
+  else:
+    vocab_cnt = vocab_counter
+  vocab = {'__PAD__':0,'__UNK__': 1}
+
+  for i,word in enumerate(vocab_cnt):
+    vocab[word] = i+2 
+  save_pickle(vocab_counter,'global_vocab.pkl')
+  save_pickle(vocab,vocab_name+'_vocab.pkl')
+  return vocab,len(vocab.keys())
+
+def load_vocab():
+  with open(vocab_name+'_vocab.pkl','rb') as f:
+    v=pickle.load(f)
+  return v
+
+
+
+def load_data(filename,devfilename):
+  from nltk.tokenize import word_tokenize
+  for i,line in enumerate(open(filename,'r')):
+    line=line.strip()
+
+    item = line.split('\t')
+
+    genre = item[0]
+    filen = item[1]
+    sent1 = item[5]
+    sent2 = item[6]
+    score = float(item[4])/5
+    sent1 = word_tokenize(sent1)
+    sent2 = word_tokenize(sent2)
+    dt.append( {'genre':genre,'filename':filen,'sent1':sent1,'sent2':sent2,'score':score } )
+
+  vocab, vocab_size = make_dictionary(dt)
+  
+  for it in dt:
+    sent1 = it['sent1']
+    sent2 = it['sent2']
+    it['sent1_idx'] = []
+    for i in sent1:
+      if i in vocab:
+        it['sent1_idx'].append(vocab.get(i,0))
+    it['sent2_idx'] = []
+    for i in sent2:
+      it['sent2_idx'].append(vocab.get(i,0) )
+
+
+  for i,line in enumerate(open(devfilename,'r')):
+    line = line.strip()
+    item = line.split('\t')
+
+    genre = item[0]
+    filen = item[1]
+    sent1 = item[5]
+    sent2 = item[6]
+    score = float(item[4])/5
+    if score > 1:
+      print('>5')
+    sent1 = word_tokenize(sent1)
+    sent2 = word_tokenize(sent2)
+
+    dev.append( {'genre':genre,'filename':filen,'sent1':sent1,'sent2':sent2,'score':score } )
+
+  for it in dev:
+    sent1 = it['sent1']
+    sent2 = it['sent2']
+    it['sent1_idx'] = []
+    for i in sent1:
+      if i in vocab:
+        it['sent1_idx'].append(vocab.get(i,0))
+    it['sent2_idx'] = []
+    for i in sent2:
+      it['sent2_idx'].append(vocab.get(i,0) )
+  
+  return vocab,vocab_size
+  
+def get_batch(i,dt):
+  return dt[(i*batch_size):i*batch_size+batch_size]
+
+def evalu():
+  dev_loss = 0
+  criterion = nn.MSELoss()
+
+  for i_batch in range(0, math.ceil(len(dev)/batch_size)  ):
+    loss = 0
+    batch = get_batch(i_batch,dev)
+
+    label = Variable(torch.FloatTensor([batch[0]['score']])).cuda(cudanum)
+
+    input1 = Variable(torch.LongTensor( batch[0]['sent1_idx'])).cuda(cudanum).view(batch_size,-1)
+    input2 = Variable(torch.LongTensor( batch[0]['sent2_idx'])).cuda(cudanum).view(batch_size,-1)
+
+    hidden1 = Variable(torch.randn(1,batch_size,hidden_size)).cuda(cudanum)
+
+    out1,out2 = net(input1,input2,hidden1)
+    #result = F.pairwise_distance(out1,out2)
+    result = F.cosine_similarity(out1,out2)
+    loss = criterion(result,label)
+    dev_loss += loss.data[0]
+    if i_batch < 10:
+      print('dev ',i_batch,':',loss.data[0],', label : ',batch[0]['score']) 
+  print ('total dev loss : ',dev_loss)
+
+
+
+def train(ep):
+  random.shuffle(dt)
+  random.shuffle(dev)
+
+  criterion = nn.MSELoss()
+
+  net_optim = optim.Adadelta(net.parameters())
+
+
+  for i_epoch in range(ep):
+    print(str(i_epoch) + ' epoch')
+    total_loss =0
+    for i_batch in range(0, math.ceil(len(dt)/batch_size)  ):
+      net_optim.zero_grad()
+
+      loss =0
+      batch = get_batch(i_batch,dt)
+      label = Variable(torch.FloatTensor([batch[0]['score']])).cuda(cudanum)
+      #label = batch[0]['score']
+      #print(label)
+      input1 = Variable(torch.LongTensor( batch[0]['sent1_idx'])).cuda(cudanum).view(batch_size,-1)
+      input2 = Variable(torch.LongTensor( batch[0]['sent2_idx'])).cuda(cudanum).view(batch_size,-1)
+
+      hidden1 = Variable(torch.randn(1,batch_size,hidden_size)).cuda(cudanum)
+
+      out1,out2 = net(input1,input2,hidden1)
+      #print(out1)
+      #print(out2)
+      result = F.cosine_similarity(out1,out2)
+
+      loss = criterion(result,label)
+
+      total_loss += loss.data[0]
+
+      loss.backward()
+      net_optim.step()
+
+    print (total_loss)
+    evalu()
+
+if __name__ == '__main__':
+  vocab,vocab_size = load_data(args.input, args.dev)
+  print('voc',vocab_size)
+  net= siam(hidden_size = args.hidden_size,embedding_size = args.embed, vocab_size=vocab_size).cuda(cudanum)
+  train(args.epoch)
+
+
+
+
+
+
+
