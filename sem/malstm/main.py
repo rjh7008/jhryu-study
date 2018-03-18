@@ -170,7 +170,10 @@ def make_padding(inp):
 
   return seq_tensor
 
+
+first = True
 def evalu():
+  global first
   dev_loss = 0
   criterion = nn.MSELoss(size_average = False)
 
@@ -194,7 +197,12 @@ def evalu():
     if i_batch < 1:
       print ('dev data first batch result')
       for i in range(len(input1)):
+        if first:
+          print ('sent1 :',' '.join(batch[i]['sent1']))
+          print ('sent2 :',' '.join(batch[i]['sent2']))
         print ('predict : ',out.data[i],', ','label : ', label.data[i])
+    if first:
+      first=False
   print ('total dev loss : ',dev_loss)
 
 
@@ -206,7 +214,6 @@ def train(ep):
   criterion = nn.MSELoss(size_average=False)
 
   net_optim = optim.Adadelta(net.parameters())
-
 
   for i_epoch in range(ep):
     print(str(i_epoch) + ' epoch')
@@ -244,10 +251,4 @@ if __name__ == '__main__':
   print('voc',vocab_size)
   net= malstm(hidden_size = args.hidden_size,embedding_size = args.embed, vocab_size=vocab_size).cuda(cudanum)
   train(args.epoch)
-
-
-
-
-
-
 
