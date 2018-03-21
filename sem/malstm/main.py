@@ -28,11 +28,13 @@ parser.add_argument('--dev',default='../stsbenchmark/sts-dev.csv',help='path of 
   )
 parser.add_argument('--epoch',default=10,help='number of epoch'
   )
+parser.add_argument('--cuda',default=0,help='number of epoch'
+  )
 args = parser.parse_args()
 
 net=None
 
-cudanum = 0
+cudanum = args.cuda
 
 batch_size=16
 
