@@ -20,16 +20,27 @@ class siam(nn.Module):
 
 
     self.embed = nn.Embedding(self.vocab_size, self.embedding_size)
-    self.gru = nn.GRU(self.embedding_size, self.hidden_size, num_layers = 1)
+    self.lstm = nn.LSTM(self.embedding_size, self.hidden_size, num_layers = 1)
 
-  def aforward (self, inputs,hidden):
+  def aforward (self, inputs,hidden,context):
     output = self.embed(inputs).transpose(1,0)
-    output,hidden = self.gru(output,hidden)
+    output,(h,c) = self.lstm(output,(hidden,context))
     return output[-1]
 
-  def forward(self, input1, input2, hidden1):
-    out1 = self.aforward(input1,hidden1)
-    out2 = self.aforward(input2,hidden1)
+  def forward(self, input1, input2, hidden1, context):
+    out1 = self.aforward(input1,hidden1,context)
+    out2 = self.aforward(input2,hidden1,context)
     return out1,out2
 
+class ContrastiveLoss(nn.Module):
+  def __init__(self,margin=2.0):
+    super(ContrastiveLoss,self).__init__()
+    self.margin = margin
+
+  def forward(self,output1,output2,label):
+    euclidean_distance = F.pairwise_distance(output1, output2)
+
+    loss_contrastive = torch.mean((1-label) * torch.pow(euclidean_distance, 2) +
+                                  (label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2)) 
+    return loss_contrastive
 

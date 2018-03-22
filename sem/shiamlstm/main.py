@@ -12,7 +12,7 @@ import math
 import logging
 from collections import Counter
 logger = logging.getLogger('main')
-from model import siam
+from model import siam, ContrastiveLoss
 
 import argparse
 
@@ -28,14 +28,17 @@ parser.add_argument('--dev',default='../stsbenchmark/sts-dev.csv',help='path of 
   )
 parser.add_argument('--epoch',default=10,help='number of epoch'
   )
+parser.add_argument('--cuda',default=0,help='number of epoch'
+  )
+
 args = parser.parse_args()
-
-
 
 net=None
 
-cudanum = 0
-batch_size=1
+cudanum = 3 
+
+batch_size=16
+
 hidden_size=args.hidden_size
 dt = []
 dev = []
@@ -65,7 +68,7 @@ def make_dictionary(dt):
       vocab_counter[i] +=1
     for i in sent2:
       vocab_counter[i]+=1
-    line_count +=1 
+    line_count +=1
   logger.info("Total: %d unique words with a total "
               "of %d words."
               % (len(vocab_counter), sum(vocab_counter.values())))
@@ -77,7 +80,7 @@ def make_dictionary(dt):
   vocab = {'__PAD__':0,'__UNK__': 1}
 
   for i,word in enumerate(vocab_cnt):
-    vocab[word] = i+2 
+    vocab[word] = i+2
   save_pickle(vocab_counter,'global_vocab.pkl')
   save_pickle(vocab,vocab_name+'_vocab.pkl')
   return vocab,len(vocab.keys())
@@ -106,7 +109,7 @@ def load_data(filename,devfilename):
     dt.append( {'genre':genre,'filename':filen,'sent1':sent1,'sent2':sent2,'score':score } )
 
   vocab, vocab_size = make_dictionary(dt)
-  
+
   for it in dt:
     sent1 = it['sent1']
     sent2 = it['sent2']
@@ -145,34 +148,66 @@ def load_data(filename,devfilename):
     it['sent2_idx'] = []
     for i in sent2:
       it['sent2_idx'].append(vocab.get(i,0) )
-  
-  return vocab,vocab_size
-  
-def get_batch(i,dt):
-  return dt[(i*batch_size):i*batch_size+batch_size]
 
+  return vocab,vocab_size
+
+def get_batch(i,dt):
+  raw = dt[(i*batch_size):i*batch_size+batch_size]
+  input1=[]
+  input2=[]
+  label=[]
+  for it in raw:
+    input1.append(it['sent1_idx'])
+    input2.append(it['sent2_idx'])
+    label.append(it['score'])
+  return raw,input1,input2,label
+
+def make_padding(inp):
+  vectorized_seqs = inp
+  seq_lengths = torch.cuda.LongTensor(list(map(len, vectorized_seqs)))
+
+  seq_tensor = Variable(torch.zeros((len(vectorized_seqs), seq_lengths.max()))).long().cuda(cudanum)
+
+  for idx, (seq, seqlen) in enumerate(zip(vectorized_seqs, seq_lengths)):
+    seq_tensor[idx, :seqlen] = Variable(torch.LongTensor(seq))
+
+  return seq_tensor
+
+
+first = True
 def evalu():
+  global first
   dev_loss = 0
-  criterion = nn.MSELoss()
+  criterion = ContrastiveLoss()
+  #criterion = nn.MSELoss(size_average = False)
 
   for i_batch in range(0, math.ceil(len(dev)/batch_size)  ):
     loss = 0
-    batch = get_batch(i_batch,dev)
+    batch,i1,i2,score = get_batch(i_batch,dev)
 
-    label = Variable(torch.FloatTensor([batch[0]['score']])).cuda(cudanum)
+    label = Variable(torch.FloatTensor(score)).cuda(cudanum)
+    input1 = make_padding(i1)
+    input2 = make_padding(i2)
 
-    input1 = Variable(torch.LongTensor( batch[0]['sent1_idx'])).cuda(cudanum).view(batch_size,-1)
-    input2 = Variable(torch.LongTensor( batch[0]['sent2_idx'])).cuda(cudanum).view(batch_size,-1)
 
-    hidden1 = Variable(torch.randn(1,batch_size,hidden_size)).cuda(cudanum)
+    hidden1 = Variable(torch.randn(1,len(input1),hidden_size)).cuda(cudanum)
+    cont = Variable(torch.randn(1,len(input2),hidden_size)).cuda(cudanum)
 
-    out1,out2 = net(input1,input2,hidden1)
-    #result = F.pairwise_distance(out1,out2)
-    result = F.cosine_similarity(out1,out2)
-    loss = criterion(result,label)
+    out1,out2 = net(input1,input2,hidden1,cont)
+
+    loss = criterion(out1,out2,label)
     dev_loss += loss.data[0]
-    if i_batch < 10:
-      print('dev ',i_batch,':',loss.data[0],', label : ',batch[0]['score']) 
+
+    if i_batch < 1:
+      out = F.pairwise_distance(out1,out2)
+      print ('dev data first batch result')
+      for i in range(len(input1)):
+        if first:
+          print ('sent1 :',' '.join(batch[i]['sent1']))
+          print ('sent2 :',' '.join(batch[i]['sent2']))
+        print ('predict : ',out.data[i],', ','label : ', label.data[i])
+    if first:
+      first=False
   print ('total dev loss : ',dev_loss)
 
 
@@ -181,10 +216,10 @@ def train(ep):
   random.shuffle(dt)
   random.shuffle(dev)
 
-  criterion = nn.MSELoss()
+  #criterion = nn.MSELoss(size_average=False)
+  criterion = ContrastiveLoss()
 
   net_optim = optim.Adadelta(net.parameters())
-
 
   for i_epoch in range(ep):
     print(str(i_epoch) + ' epoch')
@@ -193,28 +228,28 @@ def train(ep):
       net_optim.zero_grad()
 
       loss =0
-      batch = get_batch(i_batch,dt)
-      label = Variable(torch.FloatTensor([batch[0]['score']])).cuda(cudanum)
-      #label = batch[0]['score']
-      #print(label)
-      input1 = Variable(torch.LongTensor( batch[0]['sent1_idx'])).cuda(cudanum).view(batch_size,-1)
-      input2 = Variable(torch.LongTensor( batch[0]['sent2_idx'])).cuda(cudanum).view(batch_size,-1)
+      batch,i1,i2,score = get_batch(i_batch,dt)
 
-      hidden1 = Variable(torch.randn(1,batch_size,hidden_size)).cuda(cudanum)
+      label = Variable(torch.FloatTensor(score)).cuda(cudanum)
 
-      out1,out2 = net(input1,input2,hidden1)
+      input1 = make_padding(i1)
+      input2 = make_padding(i2)
+
+      hidden1 = Variable(torch.randn(1,len(input1),hidden_size)).cuda(cudanum)
+      cont = Variable(torch.randn(1,len(input2),hidden_size)).cuda(cudanum)
+
+      out1,out2 = net(input1,input2,hidden1,cont)
       #print(out1)
       #print(out2)
-      result = F.cosine_similarity(out1,out2)
 
-      loss = criterion(result,label)
+      loss = criterion(out1,out2,label)
 
       total_loss += loss.data[0]
 
       loss.backward()
       net_optim.step()
 
-    print (total_loss)
+    print ('train total loss : ',total_loss)
     evalu()
 
 if __name__ == '__main__':
@@ -222,6 +257,7 @@ if __name__ == '__main__':
   print('voc',vocab_size)
   net= siam(hidden_size = args.hidden_size,embedding_size = args.embed, vocab_size=vocab_size).cuda(cudanum)
   train(args.epoch)
+
 
 
 
