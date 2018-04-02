@@ -1,9 +1,15 @@
 
+rt-polaritydata
+rt-polaritydata*
+snapshot
 
 __pycache__
+nsmc
 Stsbenchmark.tar.gz
 stsbenchmark
 *.pkl
 
 
+semeval.d2v
+train_doc.txt
 

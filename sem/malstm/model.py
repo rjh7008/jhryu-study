@@ -16,7 +16,7 @@ from collections import Counter
 
 
 class malstm(nn.Module):
-  def __init__(self,embedding_size = 256, hidden_size = 256, vocab_size = 0):
+  def __init__(self,embedding_size = 256, hidden_size = 256, vocab_size = 0, bidirectional = 0, num_layers=1):
     super(malstm,self).__init__()
     if vocab_size == 0:
       print ('vocab size is empty!')
@@ -24,10 +24,15 @@ class malstm(nn.Module):
     self.vocab_size = vocab_size
     self.hidden_size= hidden_size
     self.embedding_size = embedding_size
+    self.num_layers = num_layers
+    if bidirectional == 1:
+      self.bidirectional = False
+    else:
+      self.bidirectional = True
 
     self.embed = nn.Embedding(self.vocab_size,self.embedding_size, padding_idx=0)
 
-    self.lstm = nn.LSTM(self.embedding_size, self.hidden_size, num_layers = 1)
+    self.lstm = nn.LSTM(self.embedding_size, self.hidden_size, num_layers = self.num_layers,bidirectional = self.bidirectional)
 
 
   def aforward(self, inputs, h, c):
@@ -44,6 +49,5 @@ class malstm(nn.Module):
     result = torch.exp( -torch.norm( out1[-1] - out2[-1], dim=1))
 
     return result
-
 
 

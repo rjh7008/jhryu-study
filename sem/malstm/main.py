@@ -18,20 +18,31 @@ import argparse
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--hidden_size", default=256, help='rnn hidden size'
+parser.add_argument("--hidden_size", default=256, type=int, help='rnn hidden size'
   )
-parser.add_argument('--embed', default = 256, help='embedding size'
+parser.add_argument('--embed', default = 256,type=int, help='embedding size'
   )
 parser.add_argument('--input',default='../stsbenchmark/sts-train.csv',help='path of training data'
   )
 parser.add_argument('--dev',default='../stsbenchmark/sts-dev.csv',help='path of dev data'
   )
-parser.add_argument('--epoch',default=10,help='number of epoch'
+parser.add_argument('--epoch',default=10,type=int, help='number of epoch'
   )
-parser.add_argument('--cuda',default=0,help='number of epoch'
+parser.add_argument('--cuda',default=0,type=int,help='number of epoch'
   )
+parser.add_argument('--bi',default=1, type=int, help='1:bidirectional, 0:non bidirectional'
+  )
+parser.add_argument('--num_layers',default=1,type=int,help='number of lstm layers'
+  )
+
 args = parser.parse_args()
 
+if args.bi == 0:
+  args.bi = 1
+else:
+  args.bi = 2
+
+print (args)
 net=None
 
 cudanum = args.cuda
@@ -103,9 +114,13 @@ def load_data(filename,devfilename):
     sent1 = item[5]
     sent2 = item[6]
     score = float(item[4])/5
+    if score>0.5:
+      ans=1
+    else:
+      ans=0
     sent1 = word_tokenize(sent1)
     sent2 = word_tokenize(sent2)
-    dt.append( {'genre':genre,'filename':filen,'sent1':sent1,'sent2':sent2,'score':score } )
+    dt.append( {'genre':genre,'filename':filen,'sent1':sent1,'sent2':sent2,'score':score,'e':ans } )
 
   vocab, vocab_size = make_dictionary(dt)
   
@@ -130,12 +145,14 @@ def load_data(filename,devfilename):
     sent1 = item[5]
     sent2 = item[6]
     score = float(item[4])/5
-    if score > 1:
-      print('>5')
+    if score>0.5:
+      ans=1
+    else:
+      ans=0
     sent1 = word_tokenize(sent1)
     sent2 = word_tokenize(sent2)
 
-    dev.append( {'genre':genre,'filename':filen,'sent1':sent1,'sent2':sent2,'score':score } )
+    dev.append( {'genre':genre,'filename':filen,'sent1':sent1,'sent2':sent2,'score':score,'e':ans } )
 
   for it in dev:
     sent1 = it['sent1']
@@ -155,11 +172,14 @@ def get_batch(i,dt):
   input1=[]
   input2=[]
   label=[]
+  e = []
   for it in raw:
     input1.append(it['sent1_idx'])
     input2.append(it['sent2_idx'])
     label.append(it['score'])
-  return raw,input1,input2,label
+    e.append(it['e'])
+
+  return raw,input1,input2,label,e
 
 def make_padding(inp):
   vectorized_seqs = inp
@@ -178,23 +198,27 @@ def evalu():
   global first
   dev_loss = 0
   criterion = nn.MSELoss(size_average = False)
-
+  correct=0
   for i_batch in range(0, math.ceil(len(dev)/batch_size)  ):
     loss = 0
-    batch,i1,i2,score = get_batch(i_batch,dev)
+    batch,i1,i2,score,e = get_batch(i_batch,dev)
 
     label = Variable(torch.FloatTensor(score)).cuda(cudanum)
     input1 = make_padding(i1)
     input2 = make_padding(i2)
+    e= torch.LongTensor(e)
 
 
-    hidden1 = Variable(torch.randn(1,len(input1),hidden_size)).cuda(cudanum)
-    cont = Variable(torch.randn(1,len(input2),hidden_size)).cuda(cudanum)
+    hidden1 = Variable(torch.randn(args.num_layers * args.bi,len(input1),hidden_size)).cuda(cudanum)
+    cont = Variable(torch.randn(args.num_layers * args.bi,len(input2),hidden_size)).cuda(cudanum)
 
     out = net(input1,input2,hidden1,cont)
 
     loss = criterion(out,label)
     dev_loss += loss.data[0]
+
+    pred = torch.round(out)
+    correct += (e.eq(pred.cpu().data.long())).sum()
 
     if i_batch < 1:
       print ('dev data first batch result')
@@ -205,6 +229,7 @@ def evalu():
         print ('predict : ',out.data[i],', ','label : ', label.data[i])
     if first:
       first=False
+  print ('total dev acc : ',str(correct/len(dev)))
   print ('total dev loss : ',dev_loss)
 
 
@@ -220,19 +245,20 @@ def train(ep):
   for i_epoch in range(ep):
     print(str(i_epoch) + ' epoch')
     total_loss =0
+    correct =0
     for i_batch in range(0, math.ceil(len(dt)/batch_size)  ):
       net_optim.zero_grad()
 
       loss =0
-      batch,i1,i2,score = get_batch(i_batch,dt)
-
+      batch,i1,i2,score,e = get_batch(i_batch,dt)
+      e= torch.LongTensor(e)
       label = Variable(torch.FloatTensor(score)).cuda(cudanum)
 
       input1 = make_padding(i1)
       input2 = make_padding(i2)
 
-      hidden1 = Variable(torch.randn(1,len(input1),hidden_size)).cuda(cudanum)
-      cont = Variable(torch.randn(1,len(input2),hidden_size)).cuda(cudanum)
+      hidden1 = Variable(torch.randn(args.num_layers * args.bi ,len(input1),hidden_size)).cuda(cudanum)
+      cont = Variable(torch.randn(args.num_layers * args.bi ,len(input2),hidden_size)).cuda(cudanum)
       
       out = net(input1,input2,hidden1,cont)
       #print(out1)
@@ -245,12 +271,16 @@ def train(ep):
       loss.backward()
       net_optim.step()
 
+      pred = torch.round(out)
+      correct += (e.eq(pred.cpu().data.long())).sum()
+      #print(correct)
+    print ('train accuracy : ', str(correct/len(dt)))
     print ('train total loss : ',total_loss)
     evalu()
 
 if __name__ == '__main__':
   vocab,vocab_size = load_data(args.input, args.dev)
   print('voc',vocab_size)
-  net= malstm(hidden_size = args.hidden_size,embedding_size = args.embed, vocab_size=vocab_size).cuda(cudanum)
+  net= malstm(hidden_size = args.hidden_size,embedding_size = args.embed, vocab_size=vocab_size, bidirectional=args.bi, num_layers = args.num_layers).cuda(cudanum)
   train(args.epoch)
 
