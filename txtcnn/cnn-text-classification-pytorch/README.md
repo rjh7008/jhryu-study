@@ -13,5 +13,17 @@ code is based on https://github.com/Shawn1993/cnn-text-classification-pytorch
 nltk.download('sentiwordnet')
 
 ## usage
+```
 python3 main.py
+```
+
+
+if you do not want to use sentiment lexicon
+
+```
+python3 main.py -nosenti
+```
+but caluate sentiment embed, just does not concat output vector
+so running speed is same
+
 

@@ -36,6 +36,10 @@ parser.add_argument('-no-cuda', action='store_true', default=False, help='disabl
 parser.add_argument('-snapshot', type=str, default=None, help='filename of model snapshot [default: None]')
 parser.add_argument('-predict', type=str, default=None, help='predict the sentence given')
 parser.add_argument('-test', action='store_true', default=False, help='train or test')
+
+
+parser.add_argument('-no_senti',action='store_true',help='use sementic lexicon')
+
 args = parser.parse_args()
 
 
@@ -58,7 +62,6 @@ def sst(text_field, label_field,  **kargs):
 def mr(text_field, label_field, **kargs):
     train_data, dev_data = mydatasets.MR.splits(text_field, label_field)
     text_field.build_vocab(train_data, dev_data)
-    print(text_field)
     label_field.build_vocab(train_data, dev_data)
     train_iter, dev_iter = data.Iterator.splits(
                                 (train_data, dev_data), 
